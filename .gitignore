@@ -1,0 +1,6 @@
+*.exe
+*.ko
+*.mod
+*.symvers
+*.o*
+
