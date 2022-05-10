@@ -1,14 +1,26 @@
-#include <linux/usb.h>
+#include <linux/init.h>
 #include <linux/module.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <linux/usb.h>
+#include <linux/kernel.h>
+#include <linux/list.h>
+#include <linux/slab.h>
+#include <linux/fs.h>
+
+#include <linux/fs_struct.h>
+
+#include <linux/proc_fs.h>
+#include <linux/mount.h>
+#include <linux/seq_file.h>
+#include <linux/stat.h>
+#include <linux/syscalls.h>
+#include <linux/notifier.h>
+
 #define USB_FOLDER ""
 #define PASSWORD_FILE ""
 
 #define ENCRYPT = true;
 
-#define PASSWORD "12345\n"
+
 
 
 MODULE_LICENSE("GPL");
@@ -17,116 +29,6 @@ MODULE_VERSION("1.0");
 
 
 
-// Secret files will crypt or decrypt upon detecting change in usb state.
-static char *secret_apps[] = {
-    "/home/parallels/Desktop/c_dev/secret/1.txt",
-    "/home/parallels/Desktop/c_dev/secret/2.txt",
-	NULL,
-};
-typedef unsigned char byte;
-
-byte get_next_byte(byte *in, int length)
-{
-    static byte *bytes = NULL;
-    static int count = 0;
-    static int ocount;
-
-    if (!in)
-    {
-	    if(!count)
-	        count = ocount;
-	    return bytes[count--];
-    }
-    else
-    {
-	    bytes = in;
-	    count = ocount = length - 1;
-	    return (byte)0;
-    }
-}
-
-byte* load_file(const char *filename, int *size)
-{
-    int file_size = 0;
-    FILE *file = fopen(filename, "rb+");
-    byte *result = NULL;
-
-    if (file)
-    {
-	    fseek(file, 0, SEEK_END);
-	    file_size = ftell(file);
-	    result = malloc(sizeof(byte) * file_size);
-	    fseek(file, 0, SEEK_SET);
-	    fread(result, sizeof(byte), file_size, file);
-	    *size = file_size;
-	    fclose(file);
-    }
-
-    return result;
-}
-
-void write_file(const char *name, byte *src, int len)
-{
-    FILE *result = fopen(name, "wb+");
-    int bytes_out = 0;
-
-    bytes_out = fwrite(src, sizeof(byte), len, result);
-    if(bytes_out != len)
-    {
-	    fprintf(stderr, "Out bytes did not match length!\n");
-    }
-
-    fclose(result);
-}
-
-void xor_bytes(byte *arr, int arr_len, byte *password, int password_len)
-{
-    byte cur;
-    get_next_byte(password, password_len);
-    int i;
-
-    for (i = 0; i < arr_len; i++)
-    {
-	    cur = get_next_byte(NULL, 0);
-	    arr[i] ^= cur;
-    }
-}
-
-static void crypt(int act, char **pas)
-{
-    int flsz, i = 0;
-    byte* filemem;
-    char* fltmp;
-    
-    while (secret_apps[i] != NULL)
-    {
-        fltmp = malloc(sizeof(char)*(strlen(secret_apps[i]) + 1));
-	    strcpy(fltmp, secret_apps[i]);
-	    fltmp[strlen(secret_apps[i])] = '\0';
-
-        filemem = load_file(fltmp, &flsz);
-
-        if (act == 1)
-        {
-            char temp[strlen(PASSWORD) + 1];
-            strcpy(temp, PASSWORD);
-            temp[strlen(PASSWORD)] = '\0';
-            xor_bytes(filemem, flsz, temp, strlen(temp));
-            
-        }
-        if (act == 2)
-        {
-            xor_bytes(filemem, flsz, argv[1], strlen(argv[1]));  
-        }
-	
-	    write_file(fltmp, filemem, flsz);
-
-	    free(fltmp);
-        i++;
-    }
-
-    
-}   
 
 // Declare a struct with a list in a compile time
 LIST_HEAD(connected_devices);
@@ -145,6 +47,97 @@ struct crypto_usb known_devices[] = {
     { .dev_id = {USB_DEVICE(0x1B1C, 0x1A0F)}}
 };
 
+
+// Read password from USB device
+static char *read_file(char *filename)
+{
+    struct kstat *stat;
+    struct file *fp;
+    mm_segment_t fs;
+    loff_t pos = 0;
+    char *buf;
+    int size;
+
+    fp = filp_open(filename, O_RDWR, 0644);
+    if (IS_ERR(fp))
+    {
+        return NULL;
+    }
+
+    fs = get_fs();
+    set_fs(KERNEL_DS);
+    
+    stat = (struct kstat *)kmalloc(sizeof(struct kstat), GFP_KERNEL);
+    if (!stat)
+    {
+        return NULL;
+    }
+
+    vfs_stat(filename, stat);
+    size = stat->size;
+
+    buf = kmalloc(size, GFP_KERNEL);
+    if (!buf) 
+    {
+        kfree(stat);
+        return NULL;
+    }
+
+    kernel_read(fp, buf, size, &pos);
+
+    filp_close(fp, NULL);
+    set_fs(fs);
+    kfree(stat);
+    buf[size]='\0';
+    return buf;
+}
+
+// Call decryption from user space
+static int call_decryption(void) {
+    printk(KERN_INFO "USB MODULE: Call_decrypt\n");
+
+    char path[80];
+    char *data = read_file(path);
+
+    char *argv[] = {asd
+        "/home/parallels/Desktop/c_dev/cryptUsb",
+        data,
+        NULL };
+
+    static char *envp[] = {
+        "HOME=/",
+        "TERM=linux",
+        "PATH=/sbin:/bin:/usr/sbin:/usr/bin", 
+        NULL };
+
+    if (call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC) < 0) 
+    {
+        return -1;
+    }
+
+    return 0;
+}
+
+// Call encryption from user space
+static int call_encryption(void) {
+    printk(KERN_INFO "USB MODULE: Call_encrypt\n");
+    char *argv[] = {
+        "/home/jasur/projects/courseWork-OS/code/crypto",
+        NULL };
+
+    static char *envp[] = {
+        "HOME=/",
+        "TERM=linux",
+        "PATH=/sbin:/bin:/usr/sbin:/usr/bin", 
+        NULL };
+
+    if (call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC) < 0) 
+    {
+        return -1;
+    }
+
+    return 0;
+}
 
 static bool device_from_list(struct usb_device_id *device, const struct usb_device_id *allowed_device) {
     if (device->idVendor != allowed_device->idVendor || device->idProduct != allowed_device->idProduct) {
@@ -269,6 +262,7 @@ static bool connected_bad_devices(void)
     return true;
 }
 
+
 static void usb_dev_insert(struct usb_device *device)
 {
     printk(KERN_INFO "CRYPTOUSB: Inserted USB with PID: %d and VID: %d", 
@@ -282,9 +276,10 @@ static void usb_dev_insert(struct usb_device *device)
         return;
     }
     printk(KERN_INFO "CRYPTOUSB: %d good device. Decrypting", known_devices_connected);
-    crypt(1, *PASSWORD);
-    
+    //crypt(1, *PASSWORD);
+    call_decryption()
 }
+
 
 static void usb_dev_remove(struct usb_device *device)
 {
@@ -320,6 +315,7 @@ static int notify(struct notifier_block *self, unsigned long action, void *dev)
     return 0;
 }
 
+
 static struct notifier_block usb_notify = {
     .notifier_call = notify,
 };
@@ -327,16 +323,27 @@ static struct notifier_block usb_notify = {
 
 static int __init cryptousb_init(void) 
 {
+
+    g_task = kthread_create(kthread_read, NULL, "kthread_read");
+	if (!IS_ERR(g_task))
+	{
+		// kthread_read doesn't wait for a termination event so we need to take a reference before
+		// the thread has a chance to run as the thread terminates with do_exit() that calls put_task_struct()
+		get_task_struct(g_task);
+		wake_up_process(g_task);
+	}	
     usb_register_notify(&usb_notify);
     printk(KERN_INFO "CRYPTOUSB: cryptousb module loaded\n");
     return 0;
 }
+
 
 static void __exit cryptousb_exit(void) 
 {
     usb_unregister_notify(&usb_notify);
     printk(KERN_INFO "CRYPTOUSB: cryptousb module unloaded\n");
 }
+
 
 module_init(cryptousb_init);
 module_exit(cryptousb_exit);
